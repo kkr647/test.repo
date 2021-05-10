@@ -1,0 +1,282 @@
+---
+title: 'Project 2: Modeling, Testing, and Predicting'
+author: "Kaitlyn Richardson kkr647 SDS348"
+date: ''
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+hook_output = knit_hooks$get('output')
+knit_hooks$set(output = function(x, options) {
+  # this hook is used only when the linewidth option is not NULL
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    # any lines wider than n should be wrapped
+    if (any(nchar(x) > n)) x = strwrap(x, width = n)
+    x = paste(x, collapse = '\n')
+  }
+  hook_output(x, options)
+})
+
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE,fig.align="center",warning=FALSE,message=FALSE,fig.width=8, fig.height=5, linewidth=60)
+options(tibble.width = 100,width = 100)
+
+OFP <- read.csv("OFP.csv")
+library(tidyverse)
+library(rstatix)
+library(lmtest)
+library(sandwich)
+library(ggplot2)
+library(plotROC)
+library(mvtnorm)
+library(ggExtra)
+library(glmnet)
+```
+
+
+## **#0: Data Description**
+My project 2 data is a cross section of patients who visit a physician's office and the emergency room. I chose this data because I thought the numerical data including patient's age, sex, race, family income, office visits, ER emissions, hospitalizations and number of chronic illnesses would be interesting to manipulate. Naturally, I have certain biases of how the healthcare system works, and due to the large sample size (4406 observations), I thought this would be a wonderful way of measuring those biases. After conducting many of the statistical analysis, I have to say my data surprised me! 
+
+## **#1: MANOVA testing** 
+```{r, echo=FALSE}
+group <- OFP$region
+DVs <- OFP %>% select(faminc, numchron, age)
+lapply(split(DVs,group), cov)
+
+#NORMALITY
+sapply(split(DVs, group), mshapiro_test)
+#Homogeneity of (co)variances
+lapply(split(DVs,group), cov)
+
+man1<-manova(cbind(faminc,numchron)~region, data=OFP)
+summary(man1)
+summary.aov(man1)
+# BOTH WERE SIGNIFICANT -> NOW NEED POST HOC TESTS S:
+OFP %>% group_by(region) %>% summarize(mean(faminc),mean(numchron))
+pairwise.t.test(OFP$faminc,OFP$region, p.adj="none")
+pairwise.t.test(OFP$numchron,OFP$region, p.adj="none")
+#.05/9=.0056 -> STILL SIGNIFICANT
+
+#Probability of error 
+Type1ErrorCount<-replicate(5000,{
+  #repeat the 3 t-tests 5000 times
+  pvals<-NULL
+  for(i in 1:9){
+    samp1 <- rnorm(20, mean=0)
+  #two samples from pops with same mean (H0 true)
+    samp2 <- rnorm(20, mean=0)
+    pvals[i] <- t.test(samp1,samp2, var.eq=T)$p.val
+    # save pvalue    
+      }  
+  sum(pvals<.05) #how many p-values were significant?
+})
+mean(Type1ErrorCount>0) 
+```
+*Explaination: For MANOVA, one needs to look at multiple assumptions: multivariate normality, homogeneity of within group covariance matrices, linear relationship, etc. For time purposes, I focused on the multivariate normality and homogeneity of covariances. The mshapiro test brought back very, very small p values. The homogeniety of covariances also brought back very strange results (appearing to have differences within groups). Both suggest that the null hypothesis was going to end up being rejected. Initially, when I ran the MANOVA I got a very small p value that would confirm my suspicions that there does appear to be differences in regions. In order to find which areas are different, I ran post-hoc t tests. For both t tests, I looked at family income and number of chronic diseases. During the family income, I found the west to have a very small number in comparision to the others. Interestingly for number of chronic illnesses, the region listed as other had smaller numbers. In total, I did 9 tests- similar to what we did in class. Using the slides from class, I took the .05 number that we expect the p value to be to decide whether or not a value is significant or not and divided it by the 9 tests I did. The total was equivalent to our class results: .0056. However, I also included another code from class that we used to run the type 1 error multiple times and it resulted that the possibility of getting a type one error was 0.3772. Even with both numbers, the values suggestion regions are significant; therefore, we should reject the null hypothesis that family income and number of chronic diseases are shared amongst regions of the US.*
+
+## **#2: Randomization Test on Data** 
+
+```{R}
+summary(aov(age~numchron,data=OFP))
+pairwise.t.test(OFP$age, OFP$numchron, p.adj = "none")
+
+#Randomization Test instead of One-Way ANOVA
+F_value <- 44.27
+
+Fs <- replicate(5000,{ 
+  new <- OFP%>%mutate(age=sample(age)) 
+  SSW <- new %>% group_by(numchron) %>% summarize(SSW=sum((age-mean(age))^2)) %>% summarize(sum(SSW)) %>% pull 
+  SSB <- new %>% mutate(mean=mean(age)) %>% group_by(numchron) %>% mutate(groupmean=mean(age)) %>%
+    summarize(SSB=sum((mean-groupmean)^2)) %>% summarize(sum(SSB))%>% pull 
+  (SSB/1)/(SSW/4404) 
+  })
+
+#PLOT OF NULL
+{hist(Fs, prob=T); abline(v = F_value, col="red",add=T)}
+mean(Fs>F_value)
+```
+*Explanation: For my project, I chose to use randimization instead of a one-way F-statistic/ANOVA. In order to compare the randomization, I needed to run an ANOVA to get an initial f-statistic. Once I got my f-statistic, I used a randomization event to test 5000 times. Whenever I ran the data, I didn't get any values that were higher than the intial f-statistic value of 44.27. The mean result ended up being 0. In the plot, one can see that it would be very, very unlikely to get a value over 44.27. Therefore, the results suggested that the null hypothesis needs to be rejected: it is reasonable to claim that the groups are significantly different.*
+
+## **#3. Linear Regression Model** 
+
+```{R}
+OFP$hosp_c <- OFP$hosp- mean(OFP$hosp)
+OFP$age_c <- OFP$age- mean(OFP$age)
+mean_hosp <- mean(OFP$hosp)
+mean_hosp
+
+fit<-lm(emr~ age_c * hosp_c, data=OFP)
+summary(fit)
+
+bptest(fit)
+summary(fit)$coef[,1:2]
+coeftest(fit, vcov = vcovHC(fit))[,1:2]
+
+#GGPLOT REGRESSION SHOWING INTERACTION? 
+library(interactions)
+interact_plot(fit, hosp_c, age_c, plot.points = T) 
+```
+*Explanation: The results from my linear regression model were very interesting and not what I expected at all! When looking at the lm results, it has that mean age and hospitalizations together are negatively related when it comes to ER visits. These same, strange results were even more evident with the ggplot. The lighter -SD of age (representing the younger generation) ended up with higher hospitalizations with ER visits than people of an older age. I believe this data means that younger generations with higher ER visits end up with more hospitalizations than people of an advanced age. A previous test that I did, revealed that older people with more office visits had higher hospitalizations. Perhaps it would be interesting to see with my data if older people get hospitalized more often from a physicians office than an ER. (That's completely against what I would have expected!) Because my data is discrete, the plot is hard to really define the homoscedasticity. It appears that there are higher amounts of low ER vists and hospitilizations. I also ran a Breush-Pagan test just to be safe; the results were lower than .05 suggest that there is homoskedasticity. So, even though I got a result with homoskedasticity, I decided to continue on just in case with the robust standar errors code. With the robust standard errors, I interpreted my results to still suggest that the null hypothesis should be rejected; however, the values were closer to the 0.05 target. They were slightly less significant. Also, the interaction of the mean age and mean hospitilizations did change to 0.59, making it NO LONGER significant. The use of the standard errors helps make up for errors in homoskedasticity.*
+
+
+## **#4. Bootstrapping** 
+
+```{R}
+set.seed(348)
+
+OFP$age_c <- OFP$age - mean(OFP$age)
+OFP$hosp_c <- OFP$hosp - mean(OFP$hosp)
+boot_dat<- sample_frac(OFP, replace=T)
+
+samp_distn<-replicate(5000, {  
+  boot_dat <- sample_frac(OFP, replace=T) 
+  fit <- lm(emr~age_c*hosp_c, data=boot_dat)
+  coef(fit)
+}) 
+
+samp_distn %>% t %>% as.data.frame %>% summarize_all(sd)
+
+samp_distn%>%t%>%as.data.frame%>%gather%>%group_by(key)%>% summarize(lower=quantile(value,.025), upper=quantile(value,.975))
+```
+*Explanation: My boot-strapping data looks very similar to the data that I got from doing the robust standard errors on question 3. The intercept shows an increase against the other two variables of less than 1%. Age and hosp seem to still be significant; however, age and hosp together is no longer significant. My original data suggested that they were all significant; however, the last two results suggests that perhaps age and hosp together are not significantly different from each other.*
+
+## **#5.Logistic Regression Model** 
+Fit a logistic regression model predicting a binary variable (if you don't have one, make/get one) from at least two explanatory variables (interaction not necessary). 
+
+    - Interpret coefficient estimates in context (10)
+    - Report a confusion matrix for your logistic regression (5)
+
+```{R}
+OFP2 <-OFP %>% mutate(y=ifelse(maried=="yes",1,0))
+fit2<-glm(y~ age + numchron, data=OFP2, family="binomial"(link="logit"))
+coeftest(fit2)
+exp(coef(fit2))%>%round(3)
+
+#CONFUSION MATRIX
+probs<-predict(fit2,type="response")
+table(predict=as.numeric(probs>.5),truth=OFP2$y) %>% addmargins
+
+#Accuracy
+(841+1870)/4406 #=0.6152973
+#Sensitivity(TPR)
+(1870/2406)#= 0.7772236
+#Specificity (TNR)
+(841/2000) #=0.4205
+#Precision(PPV)
+(868/2000) #=0.434
+
+ #ROC
+ROCplot<-ggplot(OFP2)+geom_roc(aes(d=maried,m=probs), n.cuts=0)+  geom_segment(aes(x=0,xend=1,y=0,yend=1),lty=2) + scale_x_continuous(limits = c(0,1))
+ROCplot
+
+#AUC = POOR :(
+calc_auc(ROCplot)
+
+##ggplot of LOG ODDS
+OFP2$logit<-predict(fit2,type="link")
+
+OFP2%>%ggplot(aes(logit,color=maried,fill=maried))+geom_density(alpha=.4)+  theme(legend.position=c(.85,.85))+geom_vline(xintercept=0)+xlab("predictor (logit)")+
+  ylab("Density") + geom_rug(aes(logit))
+```
+*The results of my ROC and density plot yet again do not show a strong relationship. Sensitivity is the true positive rate, which was 0.7772236. Specificity is the true negative rate (TNR), which was 0.4205. That's where the ROC comes in: it allows us to see the trade off of both. My interpretation of the ROC curve being almost equivalent to the AUC of .5, I would say it represents a chance prediction. My suspicisions were confirmed when I did the AUC of the boxplot. It was roughly 0.64 which is just a little over 50%. I interpret that result as still being very poor. On the boxplot, in theory everything past the 0 point would be ideally either married or non married. The graph shows a huge overlap between both.With that being said, you can see a little bit of difference where if the value is less than 0, there is a higher probability that it would be not be married and vice versa.  *
+
+
+## **6. Lasso** 
+    - Fit model, compute in-sample classification diagnostics (Accuracy, Sensitivity, Specificity, Precision, AUC), and interpret (5)
+    - Perform 10-fold (or repeated random sub-sampling) CV with the same model and report average out-of-sample classification diagnostics (Accuracy, Sensitivity, Specificity, Precision, and AUC); interpret AUC and compare with the in-sample metrics (10)
+    - Perform LASSO on the same model/variables. Choose lambda to give the simplest model whose accuracy is near that of the best (i.e., `lambda.1se`). Discuss which variables are retained. (5)
+    - Perform 10-fold CV using only the variables lasso selected: compare model's out-of-sample AUC to that of your logistic regressions above (5)
+
+
+
+fit3 <- glm(y~., data=OFP2)
+class_diag<-function(probs,truth){
+  if(is.numeric(truth)==FALSE & is.logical(truth)==FALSE) truth<-as.numeric(truth)-1
+  tab<-table(factor(probs>.5,levels=c("FALSE","TRUE")),truth)
+  prediction<-ifelse(probs>.5,1,0)
+  acc=mean(truth==prediction)
+  sens=mean(prediction[truth==1]==1)
+  spec=mean(prediction[truth==0]==0)
+  ppv=mean(truth[prediction==1]==1)
+  f1=2*(sens*ppv)/(sens+ppv)
+  
+  #CALCULATE EXACT AUC
+  ord<-order(probs, decreasing=TRUE)
+  probs <- probs[ord]; truth <- truth[ord]
+  
+  TPR=cumsum(truth)/max(1,sum(truth)) 
+  FPR=cumsum(!truth)/max(1,sum(!truth))
+  
+  dup<-c(probs[-1]>=probs[-length(probs)], FALSE)
+  TPR<-c(0,TPR[!dup],1); FPR<-c(0,FPR[!dup],1)
+  
+  n <- length(TPR)
+  auc<- sum( ((TPR[-1]+TPR[-n])/2) * (FPR[-1]-FPR[-n]) )
+
+  data.frame(acc,sens,spec,ppv,auc)
+}
+
+set.seed(1234)
+k=10
+
+data <- OFP2 %>% sample_frac #put rows of dataset in random order
+folds <- ntile(1:nrow(OFP),n=10) #create fold labels
+
+diags<-NULL
+for(i in 1:k){
+  train <- OFP2[folds!=i,] #create training set (all but fold i)
+  test <- OFP2[folds==i,] #create test set (just fold i)
+  truth <- test$y #save truth labels from fold i
+  
+  fit <- glm(y~(.)^2, data=OFP2, family="binomial")
+  probs <- predict(fit3, newdata=test, type="response")
+  
+  diags<-rbind(diags,class_diag(probs,truth))
+}
+
+summarize_all(diags,mean)
+
+OFP2 %>% na.exclude
+OFP2 <-OFP %>% mutate(y=ifelse(maried=="yes",1,0))
+model.matrix(y~.,data=OFP2)[,-1]
+y<-as.matrix(OFP2$y) #grab response
+x<-model.matrix(y~.,data=OFP2)[,-1] #grab predictors
+head(x)
+
+cv<-cv.glmnet(x,y,family="binomial")
+lasso<-glmnet(x,y,family="binomial",lambda=cv$lambda.1se)
+coef(lasso)
+
+#Apparently only people who are married have a significance
+
+set.seed(1234)
+k=10
+data <- OFP2 %>% sample_frac 
+#put rows of dataset in random order
+folds <- ntile(1:nrow(OFP2),n=10) 
+#create fold labels
+diags<-NULL
+for(i in 1:k){  
+  train <- OFP2[folds!=i,] 
+  #create training set (all but fold i)  
+  test <- OFP2[folds==i,] 
+  #create test set (just fold i)  
+  truth <- test$mariedyes
+  #save truth labels from fold i  
+  fit <- glm(y~maried, data=OFP2, family="binomial")  
+  probs <- predict(fit3, newdata=test, type="response")
+  diags<-rbind(diags,class_diag(probs,truth))
+}
+
+diags%>%summarize_all(mean)
+
+
+
+*Unfortunately, I ran out of time to complete this last part of the assignment. No matter how much I played around with my data, I couldn't get a new response variable from the lasso to re-do the regression. I suppose this error is on my end and the variable I used. Out of desperation, I tried using "age" which is a numerical variable just to see how it would affect the answers; however, I got the same thing back. Due to knitting purposes, I decided to use all of 6 as a comment because I'd rather get partial credit than no credit. I will continue trying to submit an improved question 6. I think because this was the last topic we covered so I'm not as comfortable with this topic as the previous questions. I apologize! *
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

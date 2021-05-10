@@ -1,0 +1,159 @@
+---
+title: 'Project 1: Exploratory Data Analysis'
+author: "Kaitlyn Richardson kkr647"
+date: 'April 4th, 2021'
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: no
+---
+
+```{R}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F,
+tidy=TRUE, tidy.opts=list(width.cutoff=60), R.options=list(max.print=100))
+```
+library(plyr)
+
+#### 0. Introduction
+For project one, I chose to play with Spotify data and Austin's weather data. Initially, I choose the Spotify data because I was really interested in what all I had been listening to throughout the pandemic. In the data, I could see what artist I listened to on a certain day, the song I listened to, what time it played, and how many milliseconds I played them. While looking at these multiple data points, I began to wonder what was happening during that particular time. From there, I decided I wanted to discover what the weather was like while I was listening to Spotify. I downloaded the weather information off of a data site. It included the max temperature, min temprature, heat index, wind gusts, precipitation, and so much more. Once I saw all the variables, I thought maybe I an association could be speculated between the weather and my Spotify data. Voila, project 1 was born!
+
+#### 1. Tidying : Rearranging Wide/Long (10 pts)
+```{R}
+library(tidyverse)
+library(lubridate)
+
+#Spotify Data
+Spotify <-read_csv("konbert-export-40c55603a9df4.csv")
+Spotify$'endTime' <- as.character(as_datetime(Spotify$'endTime'))
+spotify_data <- Spotify
+
+#Weather history Data
+history_data_1_ <- read_csv("history_data (1).csv")
+history <- history_data_1_ %>% separate('Date time', into= c("Date", "Time"), 
+                                        sep= " ")
+history$Date <- format(as.Date(history$Date, format = "%m/%d/%Y"),"%Y-%m-%d")
+history2 <-history %>% select(-one_of('Wind Chill')) %>%
+  select(-one_of('Heat Index')) %>% 
+  select(-one_of('Cloud Cover')) %>% 
+  select(-one_of('Wind Gust')) %>%
+  select(-one_of('Visibility')) %>%
+  select(-one_of('Name')) %>%
+  select(-one_of('Precipitation')) %>%
+  select(-one_of('Snow')) %>%
+  select(-one_of('Snow Depth'))
+Weather <-history2 %>% unite(Date, Time, col="Date/Time",sep=" ")
+
+```
+
+#### 2. Joining/Merging (10 pts)
+
+```{R}
+combinedSH <- full_join(spotify_data, Weather, by= c("endTime" = "Date/Time"))
+combinedNONA <-combinedSH %>% na.omit()
+```
+*I chose to unite these two data sets with a full join. The inner, left, and right join did not make sense in this situation because doing so would have taken out almost all the important variables I wanted to compare from the two data sets since they only shared the data and time. So I would have only ended up with the date and time in an inner join, I would have only ended up with the Spotify information that corresponds to the weather dates on a right join, and I would only end up with the weather information that corresponds to the Spotify data on the left join.The left/right join only would take the variable they have in common, and exclude the rest. In this case, the joining variable I had was the date/time. Because of that, I chose to do a full join instead where all the variables are meshed into one. Even though I did a full join, I still lost a lot of data due to the time increments of my weather data. My playlist data's data and times are sporadic; they do not fall into a certain time frame. On the other hand, my weather data could only go by increments of 4 minutes. By doing a full join, there were many songs/weather data that was not included in the join due to the times not matching, resulting in NA in weather fields or vice versa. I decided to add a na.omit() function to get rid of the data that did not truly fit. From two different data sets of >69,000 observations in weather and >9,000 observations from Spotify, only 286 observations survived the full join with na.omit.*
+
+#### 3. Wrangling (40 pts)
+```{R}
+#Use all 6 dplyr functions ()
+#Previous to doing this mutation, I had no idea that the current "Temperature" variable was just a mean temperature between the max and min temperatures.
+combinedNONA %>% mutate(MeanTemperature = (`Maximum Temperature`+ `Minimum Temperature`)/2)
+combinedNONA %>% group_by('Wind Speed') %>% summarize(Temperature)
+combinedNONA %>% arrange(desc(msPlayed))
+combinedNONA %>% select("Date/Time"= endTime,"Plays" = msPlayed)
+combinedNONA %>% filter(Temperature > 90)
+#Individual summary statistics for each numerical value
+colnames(combinedNONA)[colnames(combinedNONA)=="Wind Speed"]<-"Windspeed"
+colnames(combinedNONA)[colnames(combinedNONA)=="Relative Humidity"]<-"RelativeHumidity"
+colnames(combinedNONA)[colnames(combinedNONA)=="Maximum Temperature"]<-"MaxTemp"
+colnames(combinedNONA)[colnames(combinedNONA)=="Minimum Temperature"]<-"MinTemp"
+combinedNONA %>% summarise_all(n_distinct)
+combinedNONA %>% summarise_all(mean)
+combinedNONA %>% summarise_if(is.numeric, sd, na.rm = T)
+combinedNONA %>% summarise_if(is.numeric, var, na.rm = T)
+combinedNONA %>% summarise_if(is.numeric, quantile, na.rm = T)
+combinedNONA %>% summarise_if(is.numeric, min, na.rm = T)
+combinedNONA %>% summarise_if(is.numeric, max, na.rm = T)
+
+```
+*Each of the seperate summarize portions of the code show the min, max, quantile, mean, sd, var of each variable. After playing around with the dplyr, I realized how unaware of the data I was. For example, most people would assume that the minimum and maximum temperatures listed in a table would give you the average temperature. I, on the other hand, did not realize this until I did the mutate() function, using the two to make an average. I then noticed that it resulted in the same answer as the temperature. (DUH!) The rest of the statistical information really helped me understand how the data was dispersed, especially paying attention to the means and the quants. However, they didn't make have as much sense until I did the correlation box following this statistical part.
+
+#### 4. Visualizing (30 pts)
+```{R}
+#- Correlation heatmap of numeric variables 
+library(ggplot2)
+combinedcorr <- combinedNONA %>% select_if(is.numeric) %>% cor(use="pair")
+heatcor <- combinedcorr %>% as.data.frame %>% rownames_to_column("var1") %>%  pivot_longer(-1,names_to="var2",values_to="correlation")
+heatcor%>%ggplot(aes(var1,var2,fill=correlation))+ geom_tile() +  scale_fill_gradient2(low="pink",mid="white",high="purple") +
+geom_text(aes(label=round(correlation,2)),color = "black", size = 4) +
+theme(axis.text.x = element_text(angle = 90, hjust=1)) +
+coord_fixed() + ggtitle("Correlation Based on Numerical Variables")
+
+#Graph 2
+ggplot(combinedNONA, aes(endTime, msPlayed, color= Temperature)) +
+  geom_point(size= 2) +
+  ggtitle("Milliseconds Played and Associated Temperature Throughout Dates/Time") +
+  xlab("Date and Time (Year/Month/Day H:M:S)") + ylab("Milliseconds Played") +
+  scale_x_discrete(breaks=NULL)
+
+#Graph 3
+library(ggplot2)
+ggplot(combinedNONA, aes(artistName, Temperature, color= RelativeHumidity), size=.15) +
+  geom_point(size= .25, color= "Pink") + stat_summary() +
+  ggtitle("Artists with Associated Temperatures and Relative Humidity") +
+  xlab("Artists") + ylab("Temperature (F)")
+```
+*For the first ggplot, I wanted to see if there was an association between how long I played a song on a certain date and the temperature. Before making the ggplot, I figured that songs with higher milliseconds played would be associated with dates and times that have higher temperatures. After depicting the graphs, there seems to be an association of temperature with the dates but not necesarily with the milliseconds played. Between milliseconds played and date/time, there doesn't seem to be a real association. The points seem to be varied equally throughout the plot; however, the middle section of the plot is very strange. If I had more time to investigate this plot, I would want to look at those dates to understand the amalgamation in the middle of the plot.*
+
+*After I created the first plot, I thought about the specific artists I listen to. I wondered if I tend to listen to a certain artist when its a specific temperature outside or if the temperature varies. While pondering about the temperature, I also remembered how humid it was during the first couple of months I got Spotify. I decided to plot those three variables together using geom_point. I was not sure if the artists I listened to appear multiple times through out my data or if they had different temperatures/humidities associated with the artists. To my surprise, I resulted with the graph 3 results. It appears that each artist has a range of temperatures. If I had more time, I would like to use the splice() function to better analyze my data. The graph as it is only tells me that there is a range; however, I have far too many artists to be able to tell exactly how temperature/humidity are correlated with specific artists.*
+#### 5. Dimensionality Reduction (30 pts) 
+```{R}
+#2 variables
+library(tidyverse)
+library(cluster)
+clust_dat <- combinedNONA %>%dplyr::select(msPlayed, Temperature)
+
+pam1 <- clust_dat %>% pam(k=3)
+pam1
+pamclust <- clust_dat %>% mutate(cluster=as.factor(pam1$clustering))
+pamclust %>% ggplot(aes(msPlayed, Temperature, color= cluster)) + geom_point()
+pamclust %>% group_by(cluster) %>% summarize_if(is.numeric,mean,na.rm=T)
+pam1$silinfo$avg.width
+plot(pam1, which=2)
+combinedNONA%>%slice(pam1$id.med)
+
+
+pam_dat <-combinedNONA %>% select(msPlayed, Temperature)
+sil_width <- vector() 
+for(i in 2:10){
+  pam_fit <-pam(pam_dat, k= i)
+  sil_width[i] <- pam_fit$silinfo$avg.width
+}
+ggplot() + geom_line(aes(x=1:10, y= sil_width)) + scale_x_continuous(name= "k", breaks= 1:10)
+
+
+#clustering with three
+pam2 <-combinedNONA %>% select(-endTime) %>% select(-artistName) %>% select(-MaxTemp) %>%
+select(-MinTemp) %>% select(-'Wind Direction') %>%
+select(-trackName) %>% select(-Conditions) %>% scale %>% pam(3)
+pam2
+
+final <-combinedNONA %>% select(-endTime) %>% select(-artistName) %>% select(-MinTemp)  %>% select(-'Wind Direction') %>%
+select(-trackName) %>% select(-Conditions) %>% mutate(cluster=pam2$clustering)
+library(plotly)
+final %>%plot_ly(x= ~Temperature,y= ~msPlayed, z=~RelativeHumidity, color= ~cluster,
+                 type="scatter3d", mode="markers")
+
+plot(pam2, which=2)
+
+```
+*In order to observe the clusters and PAM of my data, I chose milliseconds played and temperature. My reasoning for choosing these two is because I wanted to see how the time played of songs would be associated with the temperature outside. I wondered if I had a tendency to change songs to match my mood depending on the temperature of the environment. When I applied the first pam1 section, I found that the first cluster(lower play-time) was associated with the temperature 68.4 degrees, whereas the second cluster(higher play-time) was associated with 83.8 degrees. Once I plotted the association into ggplot, immediately the clusters were obvious. In order to verify the data, I looked at the silhouette width. In the case of milliseconds played and temperature, the silhouette width was 0.7! 0.7 is only 0.01 off from finding a strong structure. Although it was very close, the final interpretation is that there is a reasonable structure between the two.*
+
+*However, for the assignment, 3 variables or more are required for this section. In order to visualize all the variables of my data set, I got rid of all the non-numerical variables and variables that I did not want to include. I decided to start out with 3 clusters in the beginning, and I ended up staying with this number in the end. I got the scatterplot to visualize three aspects of the data: the milliseconds played, temperature, and relative humidity. After doing the silhouette plot, the results turned out to be 0.24. My results suggests there's a very low amount of substancial structure found. Even if I changed the cluster size to 2, the cluster silhouette results would have still been equally substantially low (0.24). I included both the +3 cluster and the 2 variable clusters to show the variability of substantial structure depends on the variables. In the case of adding extra variables, it seems the clusters represent more noise than substantial foundations.*
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
