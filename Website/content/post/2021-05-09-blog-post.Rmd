@@ -9,13 +9,11 @@ description: ' '
 ---
 Hey guys! Check out my work:[Link to project 1](/project/project1/)
 
-Also, more importantly, check out my dog!![](/post/2021-05-09-blog-post_files/Screen Shot 2021-05-09 at 6.43.50 PM.png)
-
 Ok... now back to buisiness: PYTHON AND R.
 
 It's no secret that both of these two are incredibly important for the data science world! Although many people have opinions on which is better, you can actually get these two to effectively speak to each other. Cool, huh? 
 
-If you're working from R, all you need to do is run the "reticulate" library package in Rstudio. Do not forget to specify whether or not you're using R or python using curly brackets.
+If you're working from R, all you need to do is run the "reticulate" library package in Rstudio. Do not forget to specify whether or not you're using R or python using curly brackets. What is so amazing is that both of these codes from different sources like R and python can be used! 
 
 ```{R}
 library(reticulate) 
@@ -31,8 +29,8 @@ hi="MOTHERS-DAY"
 print(r.hi, hi)
 ```
 
-
-
+Also, more importantly, check out my dog!!
+![](/post/2021-05-09-blog-post_files/Screen Shot 2021-05-09 at 6.43.50 PM.png)
 
 
 
